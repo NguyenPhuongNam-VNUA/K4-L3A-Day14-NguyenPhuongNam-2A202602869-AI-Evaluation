@@ -34,7 +34,7 @@ answer/context trace trong `artifacts/actual_answers.json` trước khi kết lu
 | irrelevant | 0 | 0.0% |
 | incomplete | 1 | 5.0% (9.1% of failures) |
 | off_topic | 8 | 40.0% (72.7% of failures) |
-| refusal | 0 | 0.0% |
+| refusal | 0 | 0.0% *(Ghi chú: core không tự sinh nhãn refusal; tuy nhiên qua đọc actual answer, có 3 cases A01, A02, A03 thực hiện hành vi từ chối an toàn hợp lệ nhưng bị core xếp nhầm vào hallucination và incomplete)* |
 
 **Chẩn đoán tổng quan:** Vấn đề chính nằm ở retrieval, generation hay cả hai?
 Dùng ít nhất hai metrics để bảo vệ kết luận.
@@ -73,7 +73,7 @@ Relevance: 0.000 | Completeness: 0.000 | Overall: 0.000
 **Evidence inspection:** Retriever lấy đúng/thiếu/thừa chunks nào?
 
 > *Câu trả lời:*
-> Retriever lấy chunk đầu tiên chính xác tuyệt đối: `OT-00-P04` (`00_system_scope.md`) với BM25 score rất cao 20.18, rank 1, chứa đúng nguyên văn quy định cấm tiết lộ prompt, credentials và dữ liệu nội bộ. Các chunk sau (`OT-00-P06`, `OT-05-P03`) có score thấp hơn và thừa, nhưng vì rank 1 khớp gold context nên Context Precision đạt 1.000.
+> Retriever lấy chunk đầu tiên chính xác tuyệt đối: `OT-00-P04` (`00_system_scope.md`) với BM25 score rất cao 20.18, rank 1, chứa đúng nguyên văn quy định cấm tiết lộ prompt, credentials và dữ liệu nội bộ. Các chunk sau (`OT-00-P06`, `OT-05-P03`) có score thấp hơn và thừa, nhưng vì rank 1 khớp gold context nên Context Precision đạt 1.000. Đoạn cần thiết đã được retrieve đầy đủ; câu trả lời không thêm bất kỳ claim sai lệch nào ngoài nguồn mà chỉ từ chối ngắn gọn.
 
 | Level | Question | Answer |
 |---|---|---|
@@ -121,7 +121,7 @@ Relevance: 0.211 | Completeness: 0.071 | Overall: 0.116
 **Evidence inspection:**
 
 > *Câu trả lời:*
-> Retriever lấy đúng chunk `OT-00-P03` (`00_system_scope.md`) ở rank 1 với BM25 score 6.45, nêu rõ các yêu cầu chẩn đoán y tế nằm ngoài phạm vi hỗ trợ và trợ lý cần giải thích vai trò hỗ trợ OrbitTech. Tuy nhiên, các chunk sau (`OT-02-P05`, `OT-01-P01`) bị nhiễu do từ khóa "NovaBook 14".
+> Retriever lấy đúng chunk `OT-00-P03` (`00_system_scope.md`) ở rank 1 với BM25 score 6.45, nêu rõ các yêu cầu chẩn đoán y tế nằm ngoài phạm vi hỗ trợ và trợ lý cần giải thích vai trò hỗ trợ OrbitTech. Tuy nhiên, các chunk sau (`OT-02-P05`, `OT-01-P01`) bị thừa do truy xuất theo từ khóa "NovaBook 14". Đoạn context cần thiết đã có ở rank 1; câu trả lời không đưa ra chẩn đoán bậy bạ nào nhưng thiếu việc giải thích vai trò giới hạn của cửa hàng OrbitTech.
 
 | Level | Question | Answer |
 |---|---|---|
@@ -132,11 +132,19 @@ Relevance: 0.211 | Completeness: 0.071 | Overall: 0.116
 | Why 4 | Tại sao cơ chế hiện tại chưa phát hiện hoặc xử lý được? | Đánh giá lexical coi việc thiếu các từ khóa thương hiệu ("OrbitTech", "customer support role") là dấu hiệu của việc câu trả lời không bám ngữ cảnh (unfaithful). |
 | Why 5 | Root cause có thể hành động được là gì? | System prompt của RAG thiếu hướng dẫn phản hồi theo kịch bản chuẩn cho out-of-scope queries (Domain-grounded Refusal Template). |
 
-**Root cause và proposed fix:**
+**Root cause từ `find_root_cause()`:**
+
+> *Paste output:* `Context is missing or irrelevant — improve retrieval`
+
+**Bạn đồng ý hay không? Dẫn evidence từ trace:**
 
 > *Câu trả lời:*
-> - **Root cause:** System prompt RAG chưa hướng dẫn model tận dụng ngữ cảnh `00_system_scope.md` khi từ chối yêu cầu ngoài phạm vi, dẫn đến việc model sử dụng câu từ chối generic của LLM nền.
-> - **Proposed fix:** Bổ sung chỉ dẫn vào System Prompt: "When handling out-of-scope queries (e.g. medical, legal), state clearly that you are OrbitTech's customer support assistant, advise contacting emergency services if relevant, and offer assistance with supported OrbitTech topics."
+> Không đồng ý với kết luận gợi ý máy móc của hàm. Trace cho thấy retriever lấy đúng chunk `OT-00-P03` (`00_system_scope.md`) ở rank 1 với điểm số BM25 là 6.45, nêu rõ các yêu cầu chẩn đoán y tế nằm ngoài phạm vi hỗ trợ và trợ lý phải giải thích vai trò hỗ trợ OrbitTech. Context hoàn toàn KHÔNG bị thiếu (not missing) hay không liên quan (not irrelevant). Vấn đề thực chất là mô hình đã đưa ra câu từ chối y tế chuẩn an toàn của OpenAI thay vì trích xuất từ vựng từ context `OT-00-P03`, dẫn đến Faithfulness đo bằng word overlap bị chấm 0.067 (thấp nhất trong 3 điểm), khiến thuật toán chẩn đoán nhầm là lỗi retrieval.
+
+**Proposed fix cụ thể:**
+
+> *Câu trả lời:*
+> Bổ sung chỉ dẫn vào System Prompt của RAG: "When encountering out-of-scope requests (e.g. medical diagnosis, legal advice), state clearly that you are OrbitTech's customer support assistant, advise seeking appropriate professional or emergency help, and offer assistance with supported OrbitTech topics based on system scope."
 
 ---
 
@@ -160,7 +168,7 @@ Relevance: 0.500 | Completeness: 0.233 | Overall: 0.420
 **Evidence inspection:**
 
 > *Câu trả lời:*
-> Retriever lấy chính xác chunk `OT-00-P02` (`00_system_scope.md`) ở rank 1 với BM25 score rất cao 20.08, nêu rõ trợ lý chỉ giải thích chính sách, không thể xem đơn trực tiếp, không hoàn tiền, không mở khóa tài khoản và phải hướng dẫn khách đến kênh thích hợp.
+> Retriever lấy chính xác chunk `OT-00-P02` (`00_system_scope.md`) ở rank 1 với BM25 score rất cao 20.08, nêu rõ trợ lý chỉ giải thích chính sách, không thể xem đơn trực tiếp, không hoàn tiền, không mở khóa tài khoản và phải hướng dẫn khách đến kênh thích hợp. Context được lấy đúng 100%; câu trả lời không đưa ra claim sai ngoài nguồn nhưng đã bỏ sót điều kiện giải thích ranh giới thẩm quyền kỹ thuật.
 
 | Level | Question | Answer |
 |---|---|---|
@@ -171,11 +179,19 @@ Relevance: 0.500 | Completeness: 0.233 | Overall: 0.420
 | Why 4 | Tại sao cơ chế hiện tại chưa phát hiện hoặc xử lý được? | Hệ thống đánh giá yêu cầu độ phủ từ vựng cao so với expected answer vốn được biên soạn đầy đủ theo cả 3 khía cạnh. |
 | Why 5 | Root cause có thể hành động được là gì? | Thiếu cấu trúc chuẩn hóa cho câu trả lời từ chối thẩm quyền (Escalation & Authority Boundary SOP). |
 
-**Root cause và proposed fix:**
+**Root cause từ `find_root_cause()`:**
+
+> *Paste output:* `Answer is missing key information — increase context window or improve generation`
+
+**Bạn đồng ý hay không? Dẫn evidence từ trace:**
 
 > *Câu trả lời:*
-> - **Root cause:** Model thiếu cấu trúc trả lời toàn diện khi gặp yêu cầu can thiệp hệ thống trực tiếp, dẫn đến phản hồi tuy đúng sự thật nhưng thiếu hướng dẫn hành động (Actionability) và thông tin chuyển tiếp.
-> - **Proposed fix:** Tinh chỉnh prompt với few-shot example: khi gặp yêu cầu can thiệp tài khoản/tiền nong, trợ lý phải nêu rõ mình chỉ có vai trò cung cấp thông tin, hướng dẫn khách hàng gửi yêu cầu tới đội ngũ hỗ trợ người thật hoặc truy cập cổng tài khoản trực tuyến.
+> Đồng ý một phần với nửa sau của gợi ý ("improve generation"). Trace cho thấy chunk `OT-00-P02` (`00_system_scope.md`) đã được truy xuất chính xác ở rank 1 với BM25 score rất cao 20.08. Context window hoàn toàn đủ chỗ cho chunk này. Tuy nhiên, model LLM chỉ đưa ra câu trả lời phủ định ngắn ("I cannot view your live order, issue a refund, or unlock your suspended account...") mà bỏ sót phần giải thích nguyên lý thẩm quyền (không có quyền hạn kỹ thuật) và quy trình chuyển tiếp khách hàng (Escalation route theo `09_escalation_and_policy_updates.md`), khiến Completeness chỉ đạt 0.233.
+
+**Proposed fix cụ thể:**
+
+> *Câu trả lời:*
+> Tinh chỉnh system prompt với few-shot example: khi từ chối yêu cầu can thiệp hệ thống trực tiếp (xem đơn, hoàn tiền, mở khóa), câu trả lời phải tuân thủ cấu trúc 3 phần: (1) Khẳng định ranh giới thẩm quyền; (2) Giải thích nguyên tắc bảo mật/kỹ thuật; (3) Hướng dẫn khách hàng liên hệ kênh hỗ trợ chính thức có thẩm quyền.
 
 ---
 
@@ -218,6 +234,22 @@ Paste output của `generate_improvement_log()`:
 | F010 | hallucination | Multiple issues detected — review full pipeline | Review and iterate on pipeline | Open |
 | F011 | incomplete | Answer is missing key information — increase context window or improve generation | Review and iterate on pipeline | Open |
 ```
+
+**Bảng đối chiếu Failure ID với QA ID và nguyên nhân thực tế:**
+
+| Failure ID | QA ID | Type | Tóm tắt lỗi quan sát được từ trace |
+|---|---|---|---|
+| F001 | `E01` | off_topic | Nêu đúng loại sạc 65W USB-C nhưng bỏ sót câu cảnh báo sạc công suất thấp không duy trì được pin khi tải nặng. |
+| F002 | `E02` | off_topic | Nêu đúng trả góp 25% + 3 tháng nhưng bị điểm overlap thấp do cách diễn đạt khác câu chữ gold reference. |
+| F003 | `E03` | off_topic | Nêu đúng đơn hàng trên $1,000 cần chữ ký nhưng câu trả lời ngắn khiến relevance/completeness bị phạt. |
+| F004 | `E05` | off_topic | Trả lời đúng "không bao giờ hỏi mật khẩu" nhưng thiếu câu giải thích chính sách bảo mật chi tiết. |
+| F005 | `M05` | off_topic | Thiếu chi tiết điều kiện hoàn tiền gói OrbitPlus trong 14 ngày khi chưa sử dụng quyền lợi nào. |
+| F006 | `H01` | off_topic | Bỏ sót mốc chuyển tiếp chính sách 01/09/2026 (Policy v1.0 có hạn 21 ngày thay vì 30 ngày). |
+| F007 | `H03` | off_topic | Nêu được từ chối bảo hành nhưng bỏ sót cảnh báo an toàn pin phồng không được tự ý cạy mở. |
+| F008 | `H05` | off_topic | Bỏ sót quy định cấm cộng dồn mã khuyến mãi 10% với quyền lợi giảm giá 5% OrbitPlus. |
+| F009 | `A01` | hallucination | Từ chối y tế ngắn gọn bị gán nhãn hallucination do không lặp lại từ khóa scope của OrbitTech. |
+| F010 | `A02` | hallucination | Từ chối lệnh debug/jailbreak ngắn gọn 6 từ bị gán nhãn hallucination do overlap = 0. |
+| F011 | `A03` | incomplete | Từ chối hoàn tiền/mở khóa tài khoản nhưng thiếu phần hướng dẫn kênh escalate và giải thích thẩm quyền. |
 
 **Ba improvement suggestions ưu tiên**
 
