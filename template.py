@@ -25,6 +25,7 @@ The reranking helper is an optional bonus exercise and may remain unimplemented.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -163,8 +164,13 @@ class RAGASEvaluator:
         Returns:
             float in [0.0, 1.0] — 1.0 = fully grounded in context.
         """
-        # TODO
-        raise NotImplementedError("Implement evaluate_faithfulness")
+        answer_tokens = _tokenize(answer)
+        if not answer_tokens:
+            return 1.0
+        context_tokens = _tokenize(context)
+        overlap = answer_tokens & context_tokens
+        score = len(overlap) / len(answer_tokens)
+        return max(0.0, min(1.0, float(score)))
 
     def evaluate_relevance(self, answer: str, question: str) -> float:
         """
@@ -177,8 +183,13 @@ class RAGASEvaluator:
         Returns:
             float in [0.0, 1.0]
         """
-        # TODO
-        raise NotImplementedError("Implement evaluate_relevance")
+        question_tokens = _tokenize(question)
+        if not question_tokens:
+            return 1.0
+        answer_tokens = _tokenize(answer)
+        overlap = answer_tokens & question_tokens
+        score = len(overlap) / len(question_tokens)
+        return max(0.0, min(1.0, float(score)))
 
     def evaluate_completeness(self, answer: str, expected: str) -> float:
         """
@@ -191,8 +202,13 @@ class RAGASEvaluator:
         Returns:
             float in [0.0, 1.0]
         """
-        # TODO
-        raise NotImplementedError("Implement evaluate_completeness")
+        expected_tokens = _tokenize(expected)
+        if not expected_tokens:
+            return 1.0
+        answer_tokens = _tokenize(answer)
+        overlap = answer_tokens & expected_tokens
+        score = len(overlap) / len(expected_tokens)
+        return max(0.0, min(1.0, float(score)))
 
     # -----------------------------------------------------------------------
     # Task 2b — Retrieval-side metrics (evaluate the GET-CONTEXT step)
@@ -213,8 +229,17 @@ class RAGASEvaluator:
 
         Low recall => retriever missed evidence the answer needs.
         """
-        # TODO
-        raise NotImplementedError("Implement evaluate_context_recall")
+        expected_tokens = _tokenize(expected)
+        if not expected_tokens:
+            return 1.0
+        if not contexts:
+            return 0.0
+        union_tokens: set[str] = set()
+        for chunk in contexts:
+            union_tokens |= _tokenize(chunk)
+        overlap = expected_tokens & union_tokens
+        score = len(overlap) / len(expected_tokens)
+        return max(0.0, min(1.0, float(score)))
 
     def evaluate_context_precision(
         self,
@@ -234,8 +259,32 @@ class RAGASEvaluator:
         Return 1.0 if expected empty; 0.0 if no chunks or none relevant.
         Reordering relevant chunks earlier (reranking) raises this score.
         """
-        # TODO
-        raise NotImplementedError("Implement evaluate_context_precision")
+        expected_tokens = _tokenize(expected)
+        if not expected_tokens:
+            return 1.0
+        if not contexts:
+            return 0.0
+
+        relevant_flags: list[int] = []
+        for chunk in contexts:
+            chunk_tokens = _tokenize(chunk)
+            coverage = len(chunk_tokens & expected_tokens) / len(expected_tokens)
+            relevant_flags.append(1 if coverage >= relevance_threshold else 0)
+
+        num_relevant = sum(relevant_flags)
+        if num_relevant == 0:
+            return 0.0
+
+        cum_rel = 0
+        prec_sum = 0.0
+        for k, rel in enumerate(relevant_flags, 1):
+            if rel:
+                cum_rel += 1
+                precision_k = cum_rel / k
+                prec_sum += precision_k
+
+        ap_at_k = prec_sum / num_relevant
+        return max(0.0, min(1.0, float(ap_at_k)))
 
     def run_full_eval(
         self,
@@ -267,8 +316,48 @@ class RAGASEvaluator:
         Returns:
             EvalResult with all fields populated.
         """
-        # TODO
-        raise NotImplementedError("Implement run_full_eval")
+        faithfulness = self.evaluate_faithfulness(answer, context)
+        relevance = self.evaluate_relevance(answer, question)
+        completeness = self.evaluate_completeness(answer, expected)
+
+        passed = bool(faithfulness >= 0.5 and relevance >= 0.5 and completeness >= 0.5)
+
+        failure_type: str | None = None
+        if not passed:
+            if faithfulness < 0.3:
+                failure_type = "hallucination"
+            elif relevance < 0.3:
+                failure_type = "irrelevant"
+            elif completeness < 0.3:
+                failure_type = "incomplete"
+            else:
+                failure_type = "off_topic"
+
+        if contexts is None:
+            context_recall = None
+            context_precision = None
+        else:
+            context_recall = self.evaluate_context_recall(contexts, expected)
+            context_precision = self.evaluate_context_precision(contexts, expected)
+
+        qa_pair = QAPair(
+            question=question,
+            expected_answer=expected,
+            context=context,
+            retrieved_contexts=contexts if contexts is not None else [],
+        )
+
+        return EvalResult(
+            qa_pair=qa_pair,
+            actual_answer=answer,
+            faithfulness=faithfulness,
+            relevance=relevance,
+            completeness=completeness,
+            passed=passed,
+            failure_type=failure_type,
+            context_precision=context_precision,
+            context_recall=context_recall,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -310,9 +399,8 @@ class LLMJudge:
     Uses an LLM to score AI responses according to a rubric.
     """
 
-    def __init__(self, judge_llm_fn: Callable[[str], str]) -> None:
-        # TODO: store judge_llm_fn
-        pass
+    def __init__(self, judge_llm_fn: Callable[[str], str] | None = None) -> None:
+        self.judge_llm_fn = judge_llm_fn
 
     def score_response(
         self,
@@ -344,8 +432,56 @@ class LLMJudge:
                 "reasoning": str,               # raw LLM explanation
             }
         """
-        # TODO
-        raise NotImplementedError("Implement score_response")
+        prompt = (
+            f"Question: {question}\n"
+            f"Answer: {answer}\n"
+            f"Rubric: {json.dumps(rubric)}\n"
+            "Score the answer based on the rubric. Return a JSON object with scores between 0 and 1 for each criterion."
+        )
+
+        if self.judge_llm_fn is None:
+            return {
+                "scores": {criterion: 0.5 for criterion in rubric},
+                "reasoning": "Fallback reasoning: judge_llm_fn is None.",
+            }
+
+        try:
+            raw_response = self.judge_llm_fn(prompt)
+        except Exception as e:
+            return {
+                "scores": {criterion: 0.5 for criterion in rubric},
+                "reasoning": f"Fallback reasoning: error calling judge_llm_fn: {e}",
+            }
+
+        try:
+            match = re.search(r"\{.*\}", raw_response, re.DOTALL)
+            json_str = match.group(0) if match else raw_response
+            parsed = json.loads(json_str)
+            if isinstance(parsed, dict):
+                if "scores" in parsed and isinstance(parsed["scores"], dict):
+                    scores = {k: float(v) for k, v in parsed["scores"].items()}
+                    reasoning = parsed.get("reasoning", raw_response)
+                else:
+                    scores = {
+                        k: float(v)
+                        for k, v in parsed.items()
+                        if isinstance(v, (int, float))
+                    }
+                    reasoning = parsed.get("reasoning", raw_response)
+                for criterion in rubric:
+                    if criterion not in scores:
+                        scores[criterion] = 0.5
+                return {
+                    "scores": scores,
+                    "reasoning": str(reasoning),
+                }
+        except Exception:
+            pass
+
+        return {
+            "scores": {criterion: 0.5 for criterion in rubric},
+            "reasoning": raw_response if raw_response else "Fallback reasoning: failed to parse JSON.",
+        }
 
     def detect_bias(self, scores_batch: list[dict[str, Any]]) -> dict[str, Any]:
         """
@@ -366,8 +502,33 @@ class LLMJudge:
                 "severity_bias":   bool,
             }
         """
-        # TODO
-        raise NotImplementedError("Implement detect_bias")
+        all_scores: list[float] = []
+        item_averages: list[float] = []
+
+        for item in scores_batch:
+            scores = item.get("scores", {})
+            if isinstance(scores, dict) and scores:
+                item_vals = [float(v) for v in scores.values() if isinstance(v, (int, float))]
+                if item_vals:
+                    item_avg = sum(item_vals) / len(item_vals)
+                    item_averages.append(item_avg)
+                    all_scores.extend(item_vals)
+
+        avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.5
+        leniency_bias = bool(avg_score > 0.8)
+        severity_bias = bool(avg_score < 0.3)
+
+        positional_bias = False
+        if len(item_averages) >= 2:
+            avg_rest = sum(item_averages[1:]) / len(item_averages[1:])
+            if item_averages[0] > avg_rest:
+                positional_bias = True
+
+        return {
+            "positional_bias": positional_bias,
+            "leniency_bias": leniency_bias,
+            "severity_bias": severity_bias,
+        }
 
 
 # ---------------------------------------------------------------------------
